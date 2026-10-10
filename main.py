@@ -10,18 +10,14 @@ from langchain.prompts import PromptTemplate
 import traceback
 import os
 
-# api_key = "AIzaSyAW9j_-ZOMQKo2HZx9YjQmk0hlu8k6e6-w"
 api_key = os.getenv("GEMINI_API_KEY") # Add env variable pointing to your gemini key
-
-# Initialize conversation history
-conversation_history = []
 
 def get_pdf_text(pdf_docs):
     text = ""
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
         for page in pdf_reader.pages:
-            text += page.extract_text()
+            text += page.extract_text() or ""
     return text
 
 def get_text_chunks(text):
@@ -33,8 +29,8 @@ def get_text_chunks(text):
 def get_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-    vector_store.save_local("faiss_index")
-    print("Vector store created and saved locally.")  # Debugging statement
+    st.session_state.vector_store = vector_store
+    print("Vector store created for this session.")  # Debugging statement
 
 def get_conversational_chain():
     prompt_template = """
@@ -75,11 +71,11 @@ def handle_response(response):
         return None
 
 def user_input(user_question):
-    global conversation_history
-
     try:
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
-        new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+        new_db = st.session_state.get("vector_store")
+        if new_db is None:
+            st.warning("Upload and process at least one PDF first.")
+            return
         docs = new_db.similarity_search(user_question)
 
         # Debugging statements
@@ -88,6 +84,7 @@ def user_input(user_question):
             print(doc.page_content[:200])  # Print the first 200 characters of each document
 
         # Update conversation history
+        conversation_history = st.session_state.setdefault("conversation_history", [])
         conversation_history.append(f"User: {user_question}")
 
         chain = get_conversational_chain()
@@ -133,9 +130,19 @@ def main():
 
     with st.sidebar:
         st.title("Menu:")
-        pdf_docs = st.file_uploader("Upload your PDF Files and Click on the Submit & Process Button", accept_multiple_files=True)
+        pdf_docs = st.file_uploader(
+            "Upload your PDF Files and Click on the Submit & Process Button",
+            type=["pdf"],
+            accept_multiple_files=True,
+        )
         if st.button("Submit & Process"):
             with st.spinner("Processing..."):
+                if not pdf_docs:
+                    st.warning("Choose at least one PDF.")
+                    return
+                if any(getattr(pdf, "size", 0) > 10 * 1024 * 1024 for pdf in pdf_docs):
+                    st.error("Each PDF must be 10 MB or smaller.")
+                    return
                 raw_text = get_pdf_text(pdf_docs)
                 print(f"Extracted Text Length: {len(raw_text)}")  # Debugging statement
                 text_chunks = get_text_chunks(raw_text)
